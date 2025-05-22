@@ -116,9 +116,6 @@ user_bank_deposits = {}
 # Dictionary to store user-defined custom banks
 user_custom_banks = {}
 
-# Create a lock to ensure only one instance of the bot is running
-BOT_INSTANCE_LOCK = threading.Lock()
-
 # Flag to track if shutdown is in progress
 SHUTDOWN_IN_PROGRESS = False
 
@@ -165,9 +162,9 @@ def create_socket_lock():
         logging.error(f"Failed to create socket lock: {e}")
         return None
 
-def graceful_shutdown(updater=None, lock_socket=None):
+def graceful_shutdown():
     """Perform a graceful shutdown of the bot."""
-    global SHUTDOWN_IN_PROGRESS
+    global bot_updater, SHUTDOWN_IN_PROGRESS
     
     if SHUTDOWN_IN_PROGRESS:
         return
@@ -176,35 +173,19 @@ def graceful_shutdown(updater=None, lock_socket=None):
     logging.info("Starting graceful shutdown...")
     
     try:
-        # First, try to delete webhook
-        if updater and hasattr(updater, 'bot'):
-            try:
-                updater.bot.delete_webhook(drop_pending_updates=True)
-                logging.info("Deleted webhook during shutdown")
-            except:
-                pass
-        
         # Stop the updater
-        if updater:
+        if bot_updater:
             try:
-                updater.stop()
+                if hasattr(bot_updater, 'bot'):
+                    try:
+                        bot_updater.bot.delete_webhook(drop_pending_updates=True)
+                    except:
+                        pass
+                
+                bot_updater.stop()
                 logging.info("Stopped updater")
             except:
                 pass
-        
-        # Release thread lock
-        if BOT_INSTANCE_LOCK.locked():
-            BOT_INSTANCE_LOCK.release()
-            logging.info("Released thread lock")
-        
-        # Remove lock file
-        lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
-        if os.path.exists(lock_file_path):
-            try:
-                os.remove(lock_file_path)
-                logging.info("Removed lock file during shutdown")
-            except Exception as e:
-                logging.error(f"Failed to remove lock file: {e}")
             
     except Exception as e:
         logging.error(f"Error during shutdown: {e}")
@@ -213,45 +194,27 @@ def graceful_shutdown(updater=None, lock_socket=None):
         logging.info("Shutdown complete")
 
 def error_handler(update, context):
-    """Handle errors in the dispatcher - terminate immediately on conflict."""
+    """Handle errors in the dispatcher with immediate termination for conflicts."""
     try:
         if isinstance(context.error, Conflict):
-            logging.error("Conflict error: Another instance of the bot is already running. Terminating immediately.")
-            # Terminate this instance immediately
-            import os, sys
+            logging.critical("CRITICAL: Bot conflict detected - another instance is running.")
+            logging.critical("Shutting down immediately to avoid further conflicts...")
             
-            # Try to clean up resources first
-            try:
-                # Remove lock file if it exists
-                lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
-                if os.path.exists(lock_file_path):
-                    os.remove(lock_file_path)
-                    logging.info("Removed lock file during conflict termination")
-                
-                # Try to stop updater
-                if hasattr(context, 'dispatcher') and hasattr(context.dispatcher, 'updater'):
-                    context.dispatcher.updater.stop()
-                    logging.info("Stopped updater during conflict termination")
-            except Exception as cleanup_error:
-                logging.error(f"Error during cleanup before termination: {cleanup_error}")
-            
-            # Exit process immediately
-            os._exit(1)
+            # Force immediate exit without any cleanup
+            # This is necessary in containerized environments
+            import os
+            os._exit(0)  # Use exit code 0 to prevent container restart loops
             
         elif isinstance(context.error, NetworkError):
-            logging.error(f"Network error: {context.error}. Will retry automatically.")
+            logging.error(f"Network error: {context.error}")
         else:
-            # Get update information safely
             update_str = str(update) if update else "None"
-            logging.error(f"Update {update_str} caused error: {context.error}")
-            
-            # For other errors, log more details for debugging
-            import traceback
-            logging.error(f"Error traceback: {traceback.format_exc()}")
+            logging.error(f"Error processing update: {update_str}")
+            logging.error(f"Error details: {context.error}")
     except Exception as e:
         logging.error(f"Error in error handler: {e}")
         import traceback
-        logging.error(traceback.format_exc())
+        logging.error(f"Error traceback: {traceback.format_exc()}")
 
 def start(update: Update, context) -> None:
     """Send a message when the command /start is issued."""
@@ -2203,130 +2166,109 @@ def start_add_custom_bank(update: Update, context) -> None:
         "🏦 Please enter the name of the custom bank you want to add:"
     )
 
-def main():
-    """Start the bot with enhanced instance management."""
+def check_bot_already_running(bot_token):
+    """Check directly with the Telegram API if this bot is already running elsewhere."""
+    import requests
+    import time
+    import random
+    
+    # Generate a unique test message to identify this instance
+    instance_id = f"instance_check_{random.randint(1000000, 9999999)}_{int(time.time())}"
+    
+    # First, try to get updates to see if another instance is polling
+    try:
+        # Direct API call to check for getUpdates conflicts
+        api_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+        params = {
+            "timeout": 1,
+            "offset": -1,
+            "limit": 1
+        }
+        
+        # First attempt - if this succeeds without Conflict error, no other instance is running
+        response = requests.post(api_url, json=params, timeout=5)
+        response_json = response.json()
+        
+        # Check if we got a conflict error
+        if not response_json.get('ok', False) and "conflict" in response_json.get('description', '').lower():
+            logging.error(f"Bot already running (getUpdates conflict): {response_json.get('description')}")
+            return True
+            
+        # No conflict detected through getUpdates
+        logging.info("No bot instance detected via getUpdates")
+        return False
+        
+    except Exception as e:
+        # If there was an error checking, better to assume no conflict and proceed
+        logging.warning(f"Error checking if bot is running: {e}")
+        return False
+
+
+def initialize_bot_safely():
+    """Initialize the bot with comprehensive conflict prevention."""
     global bot_updater
     
-    # Create a simple lock file
-    lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
+    # Check if another instance is already running
+    if check_bot_already_running(BOT_TOKEN):
+        logging.error("Another bot instance is already running based on API check. Exiting.")
+        return None
     
-    # Kill any existing bot processes that might be running
     try:
-        import psutil
-        import sys
-        current_pid = os.getpid()
-        current_process = psutil.Process(current_pid)
+        logging.info("Initializing bot with conflict prevention...")
         
-        # Look for other Python processes running with 'main.py' in their command line
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                # Skip the current process
-                if proc.pid == current_pid:
-                    continue
-                    
-                # Check if this is a Python process running our bot
-                cmdline = proc.cmdline() if hasattr(proc, 'cmdline') else []
-                if len(cmdline) > 1 and 'python' in cmdline[0].lower() and any('main.py' in cmd for cmd in cmdline):
-                    logging.warning(f"Found existing bot process (PID {proc.pid}), attempting to terminate it")
-                    proc.terminate()
-                    proc.wait(timeout=3)
-                    logging.info(f"Successfully terminated process {proc.pid}")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-            except Exception as e:
-                logging.error(f"Error checking/terminating process: {e}")
-    except ImportError:
-        logging.warning("psutil not installed, cannot check for existing processes")
-    except Exception as e:
-        logging.error(f"Error during process cleanup: {e}")
-    
-    # Check if lock file exists
-    if os.path.exists(lock_file_path):
-        try:
-            # Check if the lock file is recent (less than 30 seconds old)
-            if time.time() - os.path.getmtime(lock_file_path) < 30:
-                logging.error("Another bot instance is already running (lock file exists). Exiting.")
-                return
-            else:
-                # Lock file is old, remove it
-                os.remove(lock_file_path)
-                logging.info("Removed stale lock file")
-        except Exception as e:
-            logging.error(f"Error checking lock file: {e}")
-            return
-    
-    # Create lock file
-    try:
-        with open(lock_file_path, 'w') as f:
-            f.write(str(time.time()))
-        logging.info("Created lock file")
-    except Exception as e:
-        logging.error(f"Failed to create lock file: {e}")
-        return
-    
-    # Simple heartbeat function to update the lock file
-    def update_lock_file():
-        while True:
-            try:
-                with open(lock_file_path, 'w') as f:
-                    f.write(str(time.time()))
-                time.sleep(10)
-            except:
-                break
-    
-    # Start heartbeat thread
-    heartbeat_thread = threading.Thread(target=update_lock_file, daemon=True)
-    heartbeat_thread.start()
-    
-    # Get thread lock
-    if not BOT_INSTANCE_LOCK.acquire(blocking=False):
-        logging.error("Failed to acquire thread lock - exiting")
-        try:
-            os.remove(lock_file_path)
-        except:
-            pass
-        return
-    
-    updater = None
-    
-    try:
-        if not BOT_TOKEN:
-            logging.error("Bot token not found")
-            return
+        # Aggressive cleanup of Telegram webhook and pending updates
+        cleanup_bot = Bot(BOT_TOKEN)
         
-        # Clean up any existing webhook more aggressively
+        # First delete webhook and drop all pending updates
+        cleanup_bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Deleted webhook and dropped pending updates")
+        time.sleep(2)
+        
+        # Then force a getUpdates call with short timeout to reset the API state
         try:
-            logging.info("Cleaning up webhook before starting bot...")
-            cleanup_bot = Bot(BOT_TOKEN)
-            
-            # Delete webhook with maximum cleanup
-            cleanup_bot.delete_webhook(drop_pending_updates=True)
-            time.sleep(3)
-            
-            # Force get updates to reset state
             cleanup_bot.get_updates(offset=-1, limit=1, timeout=1)
-            time.sleep(1)
-            
-            # Delete webhook again for good measure
-            cleanup_bot.delete_webhook(drop_pending_updates=True)
-            time.sleep(3)
-            
-            # Clean up
-            del cleanup_bot
-            logging.info("Webhook cleanup completed successfully")
-        except Exception as e:
-            logging.warning(f"Error during webhook cleanup: {e}")
+            logging.info("Reset API state with get_updates call")
+        except Exception as update_error:
+            logging.info(f"Expected error during get_updates reset: {update_error}")
         
-        # Small delay to ensure any other instances have time to shut down
-        time.sleep(5)
+        time.sleep(2)
         
-        # Create updater with correct timeout parameters
-        updater = Updater(BOT_TOKEN, request_kwargs={
-            'read_timeout': 30,
-            'connect_timeout': 40
-        })
-        bot_updater = updater
+        # Final webhook deletion to be sure
+        cleanup_bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Final webhook cleanup complete")
         
+        # Wait to ensure cleanup is complete
+        time.sleep(3)
+        
+        # Create updater with proper error handling
+        updater = Updater(
+            BOT_TOKEN, 
+            request_kwargs={
+                'read_timeout': 30,
+                'connect_timeout': 30
+            },
+            use_context=True
+        )
+        
+        return updater
+    except Exception as e:
+        logging.error(f"Error initializing bot: {e}")
+        return None
+
+
+def main():
+    """Start the bot with comprehensive conflict prevention."""
+    global bot_updater
+    
+    # Initialize the bot with conflict prevention
+    updater = initialize_bot_safely()
+    if not updater:
+        logging.error("Failed to initialize bot safely. Exiting.")
+        return
+    
+    bot_updater = updater
+    
+    try:
         # Register handlers
         dp = updater.dispatcher
         dp.add_handler(CommandHandler("start", start))
@@ -2344,8 +2286,9 @@ def main():
         # Start keep-alive
         keep_alive()
         
-        # Start polling with correct parameters and handle errors aggressively
+        # Start the bot with conflict handling
         try:
+            logging.info("Starting bot polling...")
             updater.start_polling(
                 timeout=30,
                 drop_pending_updates=True,
@@ -2354,27 +2297,23 @@ def main():
             logging.info("Bot started successfully")
             updater.idle()
         except Conflict as e:
-            logging.error(f"Conflict detected during start_polling: {e}")
-            # Terminate immediately on conflict
-            import sys
-            sys.exit(1)
-        
-    except KeyboardInterrupt:
-        logging.info("Bot stopping due to keyboard interrupt")
+            logging.critical(f"Conflict detected during polling: {e}")
+            # Force exit on conflict
+            import os
+            os._exit(1)
+            
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(f"Error in main function: {e}")
         import traceback
         logging.error(traceback.format_exc())
     finally:
-        logging.info("Performing cleanup")
-        # Remove lock file
-        try:
-            os.remove(lock_file_path)
-            logging.info("Removed lock file")
-        except:
-            pass
-        graceful_shutdown(updater, None)
-        logging.info("Cleanup complete")
+        if updater:
+            try:
+                updater.stop()
+                logging.info("Updater stopped")
+            except:
+                pass
+        logging.info("Bot shutdown complete")
 
 
 # Global variables to track bot state
@@ -2384,10 +2323,9 @@ bot_updater = None
 def signal_handler(sig, frame):
     """Handle termination signals to ensure graceful shutdown."""
     logging.info(f"Received signal {sig}, initiating graceful shutdown...")
-    global bot_updater
-    graceful_shutdown(bot_updater, None)
-    import sys
-    sys.exit(0)
+    graceful_shutdown()
+    import os
+    os._exit(0)  # Force exit to avoid restart loops
 
 if __name__ == "__main__":
     try:
@@ -2396,29 +2334,10 @@ if __name__ == "__main__":
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # Simple lock file check
-        lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
-        
-        if os.path.exists(lock_file_path):
-            # Check if lock file is recent (less than 30 seconds)
-            if time.time() - os.path.getmtime(lock_file_path) < 30:
-                logging.error("Another instance of the bot is already running (lock file exists). Exiting.")
-                import sys
-                sys.exit(1)
-            else:
-                # Lock file is stale, remove it
-                try:
-                    os.remove(lock_file_path)
-                    logging.info("Removed stale lock file")
-                except Exception as e:
-                    logging.warning(f"Could not remove stale lock file: {e}")
-        
-        # Start the bot
+        # Start the bot - no process checks needed as we now use API-based checks
         logging.info("Starting bot...")
         main()
     except Exception as e:
-        logging.critical(f"Critical error during startup check: {e}")
+        logging.critical(f"Critical error during startup: {e}")
         import traceback
         logging.critical(traceback.format_exc())
-        import sys
-        sys.exit(1)
