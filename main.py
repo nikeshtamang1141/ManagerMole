@@ -1531,24 +1531,47 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             running_paid = 0.0
             running_total = 0.0
             
-            # Process all charges individually
-            for i, charge in enumerate(charges):
-                try:
-                    # Remove any currency symbol and convert to float
-                    numeric_str = re.sub(r'[€$£¥]', '', charge)
-                    # Handle both decimal separators
-                    if decimal_separator == ',':
-                        numeric_str = numeric_str.replace(',', '.')
-                    charge_value = float(numeric_str)
-                except ValueError:
-                    charge_value = 0.0
+            # Process amounts and charges together
+            max_rows = max(len(amounts), len(charges))
+            for i in range(max_rows):
+                amount_value = 0.0
+                charge_value = 0.0
                 
-                # Write the row with just the charge
-                row = ['', '', '', charge_value, '', '', '']
-                writer.writerow(row)
+                # Get amount if available
+                if i < len(amounts):
+                    try:
+                        # Remove any currency symbol and convert to float
+                        numeric_str = re.sub(r'[€$£¥]', '', amounts[i])
+                        # Handle both decimal separators
+                        if decimal_separator == ',':
+                            numeric_str = numeric_str.replace(',', '.')
+                        amount_value = float(numeric_str)
+                    except ValueError:
+                        amount_value = 0.0
                 
-                # Update running total
-                running_paid += charge_value
+                # Get charge if available
+                if i < len(charges):
+                    try:
+                        # Remove any currency symbol and convert to float
+                        numeric_str = re.sub(r'[€$£¥]', '', charges[i])
+                        # Handle both decimal separators
+                        if decimal_separator == ',':
+                            numeric_str = numeric_str.replace(',', '.')
+                        charge_value = float(numeric_str)
+                    except ValueError:
+                        charge_value = 0.0
+                
+                # Calculate row total (amount + charge)
+                row_total = amount_value + charge_value
+                running_total += row_total
+                
+                # Write the row with the row total in the Paid To Host column
+                if row_total > 0:
+                    row = ['', '', '', row_total, '', '', '']
+                    writer.writerow(row)
+                
+                # Update running totals
+                running_paid += row_total
             
             # Add empty row before totals
             writer.writerow(['', '', '', '', '', '', ''])
