@@ -1591,77 +1591,43 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             running_paid = 0.0
             running_total = 0.0
             
-            # Process amounts and charges together
-            max_rows = max(len(amounts), len(charges))
-            for i in range(max_rows):
-                amount_value = 0.0
-                charge_value = 0.0
+            # Process all charges individually
+            for i, charge in enumerate(charges):
+                try:
+                    # Remove any currency symbol and convert to float
+                    numeric_str = re.sub(r'[€$£¥]', '', charge)
+                    # Handle both decimal separators
+                    if decimal_separator == ',':
+                        numeric_str = numeric_str.replace(',', '.')
+                    charge_value = float(numeric_str)
+                except ValueError:
+                    charge_value = 0.0
                 
-                # Get amount if available
-                if i < len(amounts):
-                    try:
-                        # Remove any currency symbol and convert to float
-                        numeric_str = re.sub(r'[€$£¥]', '', amounts[i])
-                        # Handle both decimal separators
-                        if decimal_separator == ',':
-                            numeric_str = numeric_str.replace(',', '.')
-                        amount_value = float(numeric_str)
-                    except ValueError:
-                        amount_value = 0.0
+                # Write the row with just the charge
+                charge_formatted = charge_value  # Use the exact value without special formatting
+                row = ['', '', '', charge_formatted, '', '', '']
+                writer.writerow(row)
                 
-                # Get charge if available
-                if i < len(charges):
-                    try:
-                        # Remove any currency symbol and convert to float
-                        numeric_str = re.sub(r'[€$£¥]', '', charges[i])
-                        # Handle both decimal separators
-                        if decimal_separator == ',':
-                            numeric_str = numeric_str.replace(',', '.')
-                        charge_value = float(numeric_str)
-                    except ValueError:
-                        charge_value = 0.0
-                
-                # Calculate row total (amount + charge)
-                row_total = amount_value + charge_value
-                running_total += row_total
-                
-                # Format the values for display
-                amount_formatted = f"{amount_value:.2f}" if amount_value != 0 else ''
-                charge_formatted = f"{charge_value:.2f}" if charge_value != 0 else ''
-                row_total_formatted = f"{row_total:.2f}" if row_total != 0 else ''
-                
-                # Write the row with amount, charge, and their sum
-                if amount_value != 0 or charge_value != 0:
-                    row = ['', amount_formatted, '', charge_formatted, '', '', '']
-                    writer.writerow(row)
-                    
-                    # Write the sum in the next row
-                    if row_total != 0:
-                        sum_row = ['', '', '', f"Row Total: {row_total_formatted}", '', '', '']
-                        writer.writerow(sum_row)
-                
-                # Update running totals
+                # Update running total
                 running_paid += charge_value
             
             # Add empty row before totals
             writer.writerow(['', '', '', '', '', '', ''])
             
-            # Calculate running totals for the bottom row
-            # Format the totals with two decimal places
+            # Format the totals with two decimal places as shown in the image
             total_deposit_formatted = f"{total_deposit:.2f}"
             total_paid_formatted = f"{total_paid:.2f}"
             balance_formatted = f"{balance:.2f}"
             
-            # Write the totals row at the bottom with proper labels and formatting
-            writer.writerow(['', '', '', '', '', '', ''])  # Empty row for spacing
-            totals_row = ['', 'SUMMARY', '', 'TOTALS:', total_deposit_formatted, total_paid_formatted, balance_formatted]
+            # Write the totals row at the bottom matching the image format
+            totals_row = ['', '', '', '', total_deposit_formatted, total_paid_formatted, balance_formatted]
             writer.writerow(totals_row)
             
-            # Add a footer with additional information
-            writer.writerow(['', '', '', '', '', '', ''])  # Empty row for spacing
-            writer.writerow(['', 'Report generated on:', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '', '', '', ''])
-            if bank_deposits:
-                writer.writerow(['', 'Banks included:', ', '.join([deposit['bank'] for deposit in bank_deposits]), '', '', '', ''])
+            # Remove the footer information to match the image
+            # writer.writerow(['', '', '', '', '', '', ''])  # Empty row for spacing
+            # writer.writerow(['', 'Report generated on:', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '', '', '', ''])
+            # if bank_deposits:
+            #     writer.writerow(['', 'Banks included:', ', '.join([deposit['bank'] for deposit in bank_deposits]), '', '', '', ''])
 
         # Send the file to the user with improved caption
         with open(filename, 'rb') as file:
