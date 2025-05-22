@@ -1527,61 +1527,54 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 deposit_row = [current_date, deposit_amount_formatted, "Remaining Balance", '', '', '', '']
                 writer.writerow(deposit_row)
             
-            # Write the charges (payments) in subsequent rows with running subtotals
-            running_paid = 0.0
-            running_total = 0.0
+            # Clear old processing approach
+            # Process amounts and charges separately
+            amounts_numeric = []
+            for amount in amounts:
+                try:
+                    # Remove any currency symbol and convert to float
+                    numeric_str = re.sub(r'[€$£¥]', '', amount)
+                    # Handle both decimal separators
+                    if decimal_separator == ',':
+                        numeric_str = numeric_str.replace(',', '.')
+                    amounts_numeric.append(float(numeric_str))
+                except ValueError:
+                    amounts_numeric.append(0.0)
             
-            # Process amounts and charges together
-            max_rows = max(len(amounts), len(charges))
-            for i in range(max_rows):
-                amount_value = 0.0
-                charge_value = 0.0
-                
-                # Get amount if available
-                if i < len(amounts):
-                    try:
-                        # Remove any currency symbol and convert to float
-                        numeric_str = re.sub(r'[€$£¥]', '', amounts[i])
-                        # Handle both decimal separators
-                        if decimal_separator == ',':
-                            numeric_str = numeric_str.replace(',', '.')
-                        amount_value = float(numeric_str)
-                    except ValueError:
-                        amount_value = 0.0
-                
-                # Get charge if available
-                if i < len(charges):
-                    try:
-                        # Remove any currency symbol and convert to float
-                        numeric_str = re.sub(r'[€$£¥]', '', charges[i])
-                        # Handle both decimal separators
-                        if decimal_separator == ',':
-                            numeric_str = numeric_str.replace(',', '.')
-                        charge_value = float(numeric_str)
-                    except ValueError:
-                        charge_value = 0.0
-                
-                # Calculate row total (amount + charge)
-                row_total = amount_value + charge_value
-                running_total += row_total
-                
-                # Write the row with the row total in the Paid To Host column
-                if row_total > 0:
-                    row = ['', '', '', row_total, '', '', '']
-                    writer.writerow(row)
-                
-                # Update running totals
-                running_paid += row_total
+            # Get charges as numeric values
+            charges_numeric = []
+            for charge in charges:
+                try:
+                    # Remove any currency symbol and convert to float
+                    numeric_str = re.sub(r'[€$£¥]', '', charge)
+                    # Handle both decimal separators
+                    if decimal_separator == ',':
+                        numeric_str = numeric_str.replace(',', '.')
+                    charges_numeric.append(float(numeric_str))
+                except ValueError:
+                    charges_numeric.append(0.0)
+            
+            # Process amounts and charges separately
+            amounts_sum = sum(amounts_numeric)
+            charges_sum = sum(charges_numeric)
+            
+            # Write individual charge values to the Paid To Host column
+            for charge_val in charges_numeric:
+                row = ['', '', '', charge_val, '', '', '']
+                writer.writerow(row)
             
             # Add empty row before totals
             writer.writerow(['', '', '', '', '', '', ''])
             
-            # Format the totals with two decimal places as shown in the image
-            total_deposit_formatted = f"{total_deposit:.2f}"
-            total_paid_formatted = f"{total_paid:.2f}"
-            balance_formatted = f"{balance:.2f}"
+            # The Total Paid column should show amounts + charges
+            combined_total = amounts_sum + charges_sum
             
-            # Write the totals row at the bottom matching the image format
+            # Format the totals with two decimal places
+            total_deposit_formatted = f"{total_deposit:.2f}"
+            total_paid_formatted = f"{combined_total:.2f}"
+            balance_formatted = f"{total_deposit - combined_total:.2f}"
+            
+            # Write the totals row
             totals_row = ['', '', '', '', total_deposit_formatted, total_paid_formatted, balance_formatted]
             writer.writerow(totals_row)
             
