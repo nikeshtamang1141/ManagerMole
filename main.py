@@ -1604,8 +1604,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                     charge_value = 0.0
                 
                 # Write the row with just the charge
-                charge_formatted = charge_value  # Use the exact value without special formatting
-                row = ['', '', '', charge_formatted, '', '', '']
+                row = ['', '', '', charge_value, '', '', '']
                 writer.writerow(row)
                 
                 # Update running total
