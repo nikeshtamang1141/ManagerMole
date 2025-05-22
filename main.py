@@ -1558,21 +1558,27 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             amounts_sum = sum(amounts_numeric)
             charges_sum = sum(charges_numeric)
             
-            # Write individual charge values to the Paid To Host column
-            for charge_val in charges_numeric:
-                row = ['', '', '', charge_val, '', '', '']
-                writer.writerow(row)
+            # Track the sum of all values in the Paid To Host column
+            paid_to_host_sum = 0.0
+            
+            # Calculate each amount + charge pair and show the sum in Paid To Host
+            for i in range(len(amounts_numeric)):
+                if i < len(charges_numeric):
+                    # Add amount and charge for this row
+                    row_sum = amounts_numeric[i] + charges_numeric[i]
+                    # Add to running total of Paid To Host values
+                    paid_to_host_sum += row_sum
+                    # Write the row with the sum in Paid To Host column
+                    row = ['', '', '', row_sum, '', '', '']
+                    writer.writerow(row)
             
             # Add empty row before totals
             writer.writerow(['', '', '', '', '', '', ''])
             
-            # The Total Paid column should show amounts + charges
-            combined_total = amounts_sum + charges_sum
-            
             # Format the totals with two decimal places
             total_deposit_formatted = f"{total_deposit:.2f}"
-            total_paid_formatted = f"{combined_total:.2f}"
-            balance_formatted = f"{total_deposit - combined_total:.2f}"
+            total_paid_formatted = f"{paid_to_host_sum:.2f}"  # Sum of all Paid To Host values
+            balance_formatted = f"{total_deposit - paid_to_host_sum:.2f}"
             
             # Write the totals row
             totals_row = ['', '', '', '', total_deposit_formatted, total_paid_formatted, balance_formatted]
