@@ -1554,23 +1554,22 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 except ValueError:
                     charges_numeric.append(0.0)
             
-            # Process amounts and charges separately
-            amounts_sum = sum(amounts_numeric)
-            charges_sum = sum(charges_numeric)
-            
             # Track the sum of all values in the Paid To Host column
             paid_to_host_sum = 0.0
             
-            # Calculate each amount + charge pair and show the sum in Paid To Host
-            for i in range(len(amounts_numeric)):
-                if i < len(charges_numeric):
-                    # Add amount and charge for this row
-                    row_sum = amounts_numeric[i] + charges_numeric[i]
-                    # Add to running total of Paid To Host values
-                    paid_to_host_sum += row_sum
-                    # Write the row with the sum in Paid To Host column
-                    row = ['', '', '', row_sum, '', '', '']
-                    writer.writerow(row)
+            # Use the approach from simple_export to calculate row sums
+            max_rows = max(len(amounts_numeric), len(charges_numeric))
+            for i in range(max_rows):
+                amount_value = amounts_numeric[i] if i < len(amounts_numeric) else 0
+                charge_value = charges_numeric[i] if i < len(charges_numeric) else 0
+                
+                # Calculate row sum (amount + charge) exactly as in simple export
+                row_sum = amount_value + charge_value
+                paid_to_host_sum += row_sum
+                
+                # Write the row with the sum in Paid To Host column
+                row = ['', '', '', row_sum, '', '', '']
+                writer.writerow(row)
             
             # Add empty row before totals
             writer.writerow(['', '', '', '', '', '', ''])
