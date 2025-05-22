@@ -76,4 +76,4 @@ The bot will start in polling mode and listen for messages.
 - Standard decimal (123.45)
 - Comma separator (123,45)
 - With currency symbols ($123.45, €123,45)
-- Negative values (-123.45)
+- Negative values (-123.45)# ManagerMole
