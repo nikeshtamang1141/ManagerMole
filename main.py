@@ -1408,6 +1408,24 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 else:
                     charges.append(extracted_value)
 
+    # Always process collected messages to ensure charges are included
+    for message_data in user_messages[user_id]:
+        message_text = message_data['text']
+
+        # Find all matches in the message
+        matches = re.findall(pattern, message_text)
+
+        for match in matches:
+            currency, original_number, processed_number, value, has_decimal = extract_number_value(match, decimal_separator, message_text)
+
+            # Format the extracted value
+            extracted_value = f"{currency}{processed_number}" if currency and preferences['include_currency'] else processed_number
+
+            # Add charges to the list (amounts are handled separately for manual input)
+            if value <= AMOUNT_THRESHOLD:
+                if extracted_value not in charges:  # Avoid duplicates
+                    charges.append(extracted_value)
+
     if not amounts and not charges:
         message.reply_text(
             f"❗ I couldn't find any numbers in your collected messages."
