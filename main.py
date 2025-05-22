@@ -1237,21 +1237,21 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
         if 'bank_deposits' in user_states[user_id] and user_states[user_id]['bank_deposits']:
             bank_deposits = user_states[user_id]['bank_deposits']
             
-            # Add all bank deposits to amounts list for processing
-            for deposit in bank_deposits:
-                deposit_amount = deposit['amount']
-                # Convert to string with appropriate format
-                deposit_str = str(int(deposit_amount) if deposit_amount.is_integer() else deposit_amount)
-                amounts.append(deposit_str)
+            # We'll handle bank deposits separately - don't add to amounts list
+            # for deposit in bank_deposits:
+            #     deposit_amount = deposit['amount']
+            #     # Convert to string with appropriate format
+            #     deposit_str = str(int(deposit_amount) if deposit_amount.is_integer() else deposit_amount)
+            #     amounts.append(deposit_str)
         else:
             # Fallback to old single deposit method if no bank_deposits list
             deposit_amount = user_states[user_id].get('deposit_amount')
             bank_name = user_states[user_id].get('bank_name')
             
             if deposit_amount is not None and bank_name is not None:
-                # Convert to string with appropriate format
-                deposit_str = str(int(deposit_amount) if deposit_amount.is_integer() else deposit_amount)
-                amounts.append(deposit_str)
+                # Don't add to amounts list, handle separately
+                # deposit_str = str(int(deposit_amount) if deposit_amount.is_integer() else deposit_amount)
+                # amounts.append(deposit_str)
                 bank_deposits.append({
                     'bank': bank_name,
                     'amount': deposit_amount
@@ -1319,8 +1319,13 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
         except ValueError:
             charges_numeric.append(0.0)
 
-    # Calculate deposit total (sum of amounts, excluding any special handling)
+    # Calculate deposit total (including bank deposits)
     total_deposit = sum(amounts_numeric)
+    
+    # Add bank deposits to total
+    for deposit in bank_deposits:
+        if deposit['bank'] != 'Previous Balance':  # Don't double count previous balance
+            total_deposit += deposit['amount']
     
     # If we have a previous balance, add it to the total deposit
     if previous_balance > 0:
@@ -1421,7 +1426,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 deposit_row = [current_date, deposit_amount_formatted, "Remaining Balance", '', '', '', '']
                 writer.writerow(deposit_row)
             
-            # Calculate each amount + charge and write to Paid To Host column
+            # Calculate each amount + charge pair and show in Paid To Host column
             paid_to_host_sum = 0.0
             
             # Make sure we have the minimum number of rows we need
