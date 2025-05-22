@@ -8,7 +8,7 @@ import socket
 import threading
 import random
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, Filters
 from telegram.error import Conflict, TelegramError, NetworkError
 
@@ -197,24 +197,14 @@ def graceful_shutdown(updater=None, lock_socket=None):
             BOT_INSTANCE_LOCK.release()
             logging.info("Released thread lock")
         
-        # Close socket lock
-        if lock_socket:
+        # Remove lock file
+        lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
+        if os.path.exists(lock_file_path):
             try:
-                lock_socket.close()
-                logging.info("Closed socket lock")
-            except:
-                pass
-        
-        # Additional cleanup
-        try:
-            # Force cleanup of any remaining sockets
-            for sock in [s for s in socket.socket() if s.fileno() > 0]:
-                try:
-                    sock.close()
-                except:
-                    pass
-        except:
-            pass
+                os.remove(lock_file_path)
+                logging.info("Removed lock file during shutdown")
+            except Exception as e:
+                logging.error(f"Failed to remove lock file: {e}")
             
     except Exception as e:
         logging.error(f"Error during shutdown: {e}")
@@ -2212,22 +2202,55 @@ def main():
     """Start the bot with enhanced instance management."""
     global bot_updater, bot_lock_socket
     
-    # Get socket lock - if we can't get the lock, another instance is running
-    lock_socket = create_socket_lock()
-    bot_lock_socket = lock_socket
-    if not lock_socket:
-        logging.error("Failed to acquire socket lock - exiting to avoid conflicts")
+    # Create a simple lock file
+    lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
+    
+    # Check if lock file exists
+    if os.path.exists(lock_file_path):
+        try:
+            # Check if the lock file is recent (less than 30 seconds old)
+            if time.time() - os.path.getmtime(lock_file_path) < 30:
+                logging.error("Another bot instance is already running (lock file exists). Exiting.")
+                return
+            else:
+                # Lock file is old, remove it
+                os.remove(lock_file_path)
+                logging.info("Removed stale lock file")
+        except Exception as e:
+            logging.error(f"Error checking lock file: {e}")
+            return
+    
+    # Create lock file
+    try:
+        with open(lock_file_path, 'w') as f:
+            f.write(str(time.time()))
+        logging.info("Created lock file")
+    except Exception as e:
+        logging.error(f"Failed to create lock file: {e}")
         return
+    
+    # Simple heartbeat function to update the lock file
+    def update_lock_file():
+        while True:
+            try:
+                with open(lock_file_path, 'w') as f:
+                    f.write(str(time.time()))
+                time.sleep(10)
+            except:
+                break
+    
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=update_lock_file, daemon=True)
+    heartbeat_thread.start()
     
     # Get thread lock
     if not BOT_INSTANCE_LOCK.acquire(blocking=False):
         logging.error("Failed to acquire thread lock - exiting")
-        if lock_socket:
-            lock_socket.close()
+        try:
+            os.remove(lock_file_path)
+        except:
+            pass
         return
-    
-    # Short wait before starting
-    time.sleep(5)
     
     updater = None
     
@@ -2287,7 +2310,13 @@ def main():
         logging.error(traceback.format_exc())
     finally:
         logging.info("Performing cleanup")
-        graceful_shutdown(updater, lock_socket)
+        # Remove lock file
+        try:
+            os.remove(lock_file_path)
+            logging.info("Removed lock file")
+        except:
+            pass
+        graceful_shutdown(updater, None)
         logging.info("Cleanup complete")
 
 
@@ -2311,37 +2340,26 @@ if __name__ == "__main__":
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # Use a file-based lock for better cross-platform compatibility
-        lock_filename = "bot_instance.lock"
+        # Simple lock file check
+        lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
         
-        try:
-            # Try to create and lock the file
-            with open(lock_filename, 'w') as lock_file:
+        if os.path.exists(lock_file_path):
+            # Check if lock file is recent (less than 30 seconds)
+            if time.time() - os.path.getmtime(lock_file_path) < 30:
+                logging.error("Another instance of the bot is already running (lock file exists). Exiting.")
+                import sys
+                sys.exit(1)
+            else:
+                # Lock file is stale, remove it
                 try:
-                    # Try to get an exclusive lock on the file
-                    import fcntl
-                    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    # If we reach here, we got the lock, so we can start the bot
-                    logging.info("No other instances detected, starting bot...")
-                    main()
-                except (IOError, ImportError):
-                    # Either the file is already locked or fcntl is not available (Windows)
-                    # Try socket lock instead for Windows compatibility
-                    test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    try:
-                        test_socket.bind(('localhost', 10001))
-                        test_socket.close()
-                        # If we get here, no other instance is running, so we can start
-                        logging.info("No other instances detected via socket, starting bot...")
-                        main()
-                    except socket.error:
-                        # Another instance is already running
-                        logging.error("Another instance of the bot is already running. Exiting.")
-                        test_socket.close()
-        except Exception as e:
-            logging.error(f"Error checking for existing instances: {e}")
-            # Fall back to starting anyway, the socket lock in main() will handle conflicts
-            main()
+                    os.remove(lock_file_path)
+                    logging.info("Removed stale lock file")
+                except Exception as e:
+                    logging.warning(f"Could not remove stale lock file: {e}")
+        
+        # Start the bot
+        logging.info("Starting bot...")
+        main()
     except Exception as e:
         logging.critical(f"Critical error during startup check: {e}")
         import traceback
