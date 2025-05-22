@@ -1310,27 +1310,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
         previous_balance = manual_remaining_balance
         logger.info(f"Using manually entered remaining balance: {previous_balance}")
     
-    # Process all collected messages if not using manual input exclusively
-    if not use_manual_input or not amounts:
-        for message_data in user_messages[user_id]:
-            message_text = message_data['text']
-
-            # Find all matches in the message
-            matches = re.findall(pattern, message_text)
-
-            for match in matches:
-                currency, original_number, processed_number, value, has_decimal = extract_number_value(match, decimal_separator, message_text)
-
-                # Format the extracted value
-                extracted_value = f"{currency}{processed_number}" if currency and preferences['include_currency'] else processed_number
-
-                # Add to appropriate category
-                if value > AMOUNT_THRESHOLD:
-                    amounts.append(extracted_value)
-                else:
-                    charges.append(extracted_value)
-
-    # Always process collected messages to ensure charges are included
+    # Process all collected messages to extract both amounts and charges
     for message_data in user_messages[user_id]:
         message_text = message_data['text']
 
@@ -1343,10 +1323,11 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             # Format the extracted value
             extracted_value = f"{currency}{processed_number}" if currency and preferences['include_currency'] else processed_number
 
-            # Add charges to the list (amounts are handled separately for manual input)
-            if value <= AMOUNT_THRESHOLD:
-                if extracted_value not in charges:  # Avoid duplicates
-                    charges.append(extracted_value)
+            # Add to appropriate category
+            if value > AMOUNT_THRESHOLD:
+                amounts.append(extracted_value)
+            else:
+                charges.append(extracted_value)
 
     if not amounts and not charges:
         message.reply_text(
@@ -1354,50 +1335,38 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
         )
         return
 
-    # Calculate the total deposit (sum of amounts)
-    total_deposit = 0
+    # Convert amounts to numeric values
+    amounts_numeric = []
+    for amount in amounts:
+        try:
+            # Remove any currency symbol and convert to float
+            numeric_str = re.sub(r'[€$£¥]', '', amount)
+            # Handle both decimal separators
+            if decimal_separator == ',':
+                numeric_str = numeric_str.replace(',', '.')
+            amounts_numeric.append(float(numeric_str))
+        except ValueError:
+            amounts_numeric.append(0.0)
     
-    # First add the previous balance if it exists and we're not using it as a special entry
-    if previous_balance > 0 and not (use_manual_input and 'bank_deposits' in user_states[user_id] and 
-                                   any(d['bank'] == 'Previous Balance' for d in bank_deposits)):
+    # Convert charges to numeric values
+    charges_numeric = []
+    for charge in charges:
+        try:
+            # Remove any currency symbol and convert to float
+            numeric_str = re.sub(r'[€$£¥]', '', charge)
+            # Handle both decimal separators
+            if decimal_separator == ',':
+                numeric_str = numeric_str.replace(',', '.')
+            charges_numeric.append(float(numeric_str))
+        except ValueError:
+            charges_numeric.append(0.0)
+
+    # Calculate deposit total (sum of amounts, excluding any special handling)
+    total_deposit = sum(amounts_numeric)
+    
+    # If we have a previous balance, add it to the total deposit
+    if previous_balance > 0:
         total_deposit += previous_balance
-        
-    # Then add all the amounts
-    for amount_str in amounts:
-        # Remove any currency symbol
-        numeric_str = re.sub(r'[€$£¥]', '', amount_str)
-        # Replace comma with period if needed
-        if decimal_separator == ',':
-            numeric_str = numeric_str.replace(',', '.')
-        # Convert to float and add to sum
-        try:
-            total_deposit += float(numeric_str)
-        except ValueError:
-            # Skip if conversion fails
-            pass
-    
-    # Calculate the total paid (sum of charges)
-    total_paid = 0
-    for charge_str in charges:
-        # Remove any currency symbol
-        numeric_str = re.sub(r'[€$£¥]', '', charge_str)
-        # Replace comma with period if needed
-        if decimal_separator == ',':
-            numeric_str = numeric_str.replace(',', '.')
-        # Convert to float and add to sum
-        try:
-            total_paid += float(numeric_str)
-        except ValueError:
-            # Skip if conversion fails
-            pass
-    
-    # Calculate the balance (total deposit - total paid)
-    balance = total_deposit - total_paid
-    
-    # Format the totals to match the screenshot format - always show 2 decimal places
-    total_deposit_str = f"{total_deposit:.2f}"
-    total_paid_str = f"{total_paid:.2f}"
-    balance_str = f"{balance:.2f}"
 
     # Determine the CSV file path
     if csv_path and os.path.isfile(csv_path):
@@ -1416,7 +1385,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
 
     try:
         if file_exists:
-            # Read existing file to get current totals and previous day's balance
+            # Read existing file to get current totals
             existing_totals = {'total_deposit': 0, 'total_paid': 0, 'balance': 0}
             try:
                 with open(filename, 'r', newline='', encoding='utf-8') as csvfile:
@@ -1425,7 +1394,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                     
                     # Check if file has the expected format
                     if len(rows) > 0 and 'Date' in rows[0] and 'Total Deposit' in rows[0]:
-                        # Find the totals row (usually the last non-empty row)
+                        # Find the totals row
                         for row in reversed(rows):
                             if row and row[4] and row[5] and row[6]:  # Total columns have values
                                 try:
@@ -1438,44 +1407,11 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                                     pass
             except Exception as e:
                 logger.error(f"Error reading existing CSV: {e}")
-                # Continue with new file if reading fails
                 file_exists = False
             
             # Open file in append mode
             mode = 'a'
             
-            # If we have a previous balance, handle it appropriately
-            if previous_balance > 0:
-                if use_manual_input:
-                    # If user manually entered a remaining balance, inform them
-                    if user_id in user_states and user_states[user_id].get('remaining_balance') is not None:
-                        message.reply_text(f"Note: Using your manually entered remaining balance of {previous_balance}. This will be included in your total calculations.")
-                    else:
-                        # Using previous balance from file
-                        message.reply_text(f"Note: Previous day's remaining balance was {previous_balance}. This will be included in your total calculations.")
-                else:
-                    # Add previous balance as a special entry
-                    bank_deposits.insert(0, {
-                        'bank': "Previous Balance",
-                        'amount': previous_balance
-                    })
-            
-            # Calculate new totals
-            # Always include previous balance in calculations
-            total_deposit += existing_totals['total_deposit']
-            total_paid += existing_totals['total_paid']
-            
-            # Calculate the final balance
-            balance = total_deposit - total_paid
-            
-            # Log the balance calculation for debugging
-            logger.debug(f"Balance calculation: {total_deposit} - {total_paid} = {balance}")
-            logger.debug(f"Previous balance: {previous_balance}")
-            
-            # Inform user about the running balance
-            if previous_balance > 0:
-                message.reply_text(f"Your running balance includes the previous day's balance of {previous_balance}.")
-
         else:
             # Create new file
             mode = 'w'
@@ -1489,7 +1425,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 fieldnames = ['Date', 'Deposit Amount', 'Bank Name', 'Paid To Host', 'Total Deposit', 'Total Paid', 'Remaining Balance']
                 writer.writerow(fieldnames)
             
-            # If we have manually entered bank deposits, write each one with improved formatting
+            # If we have manually entered bank deposits, write each one
             if bank_deposits:
                 # Sort deposits to ensure Previous Balance comes first if it exists
                 sorted_deposits = sorted(bank_deposits, key=lambda x: 0 if x['bank'] == 'Previous Balance' else 1)
@@ -1527,47 +1463,25 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 deposit_row = [current_date, deposit_amount_formatted, "Remaining Balance", '', '', '', '']
                 writer.writerow(deposit_row)
             
-            # Clear old processing approach
-            # Process amounts and charges separately
-            amounts_numeric = []
-            for amount in amounts:
-                try:
-                    # Remove any currency symbol and convert to float
-                    numeric_str = re.sub(r'[€$£¥]', '', amount)
-                    # Handle both decimal separators
-                    if decimal_separator == ',':
-                        numeric_str = numeric_str.replace(',', '.')
-                    amounts_numeric.append(float(numeric_str))
-                except ValueError:
-                    amounts_numeric.append(0.0)
-            
-            # Get charges as numeric values
-            charges_numeric = []
-            for charge in charges:
-                try:
-                    # Remove any currency symbol and convert to float
-                    numeric_str = re.sub(r'[€$£¥]', '', charge)
-                    # Handle both decimal separators
-                    if decimal_separator == ',':
-                        numeric_str = numeric_str.replace(',', '.')
-                    charges_numeric.append(float(numeric_str))
-                except ValueError:
-                    charges_numeric.append(0.0)
-            
-            # Track the sum of all values in the Paid To Host column
+            # Calculate each amount + charge and write to Paid To Host column
             paid_to_host_sum = 0.0
             
-            # Use the approach from simple_export to calculate row sums
-            max_rows = max(len(amounts_numeric), len(charges_numeric))
-            for i in range(max_rows):
-                amount_value = amounts_numeric[i] if i < len(amounts_numeric) else 0
-                charge_value = charges_numeric[i] if i < len(charges_numeric) else 0
+            # Make sure we have the minimum number of rows we need
+            min_rows = min(len(amounts_numeric), len(charges_numeric))
+            
+            # For each pair, add amount and charge
+            for i in range(min_rows):
+                # Get the values for this row
+                amount_val = amounts_numeric[i]
+                charge_val = charges_numeric[i]
                 
-                # Calculate row sum (amount + charge) exactly as in simple export
-                row_sum = amount_value + charge_value
+                # Add them together
+                row_sum = amount_val + charge_val
+                
+                # Add to running total
                 paid_to_host_sum += row_sum
                 
-                # Write the row with the sum in Paid To Host column
+                # Write the sum to Paid To Host column
                 row = ['', '', '', row_sum, '', '', '']
                 writer.writerow(row)
             
@@ -1576,25 +1490,19 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             
             # Format the totals with two decimal places
             total_deposit_formatted = f"{total_deposit:.2f}"
-            total_paid_formatted = f"{paid_to_host_sum:.2f}"  # Sum of all Paid To Host values
+            total_paid_formatted = f"{paid_to_host_sum:.2f}"
             balance_formatted = f"{total_deposit - paid_to_host_sum:.2f}"
             
             # Write the totals row
             totals_row = ['', '', '', '', total_deposit_formatted, total_paid_formatted, balance_formatted]
             writer.writerow(totals_row)
-            
-            # Remove the footer information to match the image
-            # writer.writerow(['', '', '', '', '', '', ''])  # Empty row for spacing
-            # writer.writerow(['', 'Report generated on:', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '', '', '', ''])
-            # if bank_deposits:
-            #     writer.writerow(['', 'Banks included:', ', '.join([deposit['bank'] for deposit in bank_deposits]), '', '', '', ''])
 
-        # Send the file to the user with improved caption
+        # Send the file to the user
         with open(filename, 'rb') as file:
             message.reply_document(
                 document=file,
                 filename=os.path.basename(filename),
-                caption=f"📊 Enhanced CSV export with the format: Date, Deposit Amount, Bank Name, Paid To Host, Total Deposit, Total Paid, Remaining Balance.\n\nThe file includes:\n- Multiple bank deposits with their respective amounts ({len(bank_deposits)} banks included)\n- Individual payments in the Paid To Host column ({len(charges)} payments recorded)\n- Row totals showing sum of amount and charge for each entry\n- Running totals with automatic calculations\n- Previous balance of {previous_balance:.2f} included in calculations\n- Final remaining balance: {balance:.2f}\n- Improved formatting for better readability"
+                caption=f"📊 CSV export with deposit, paid to host (amount+charge), and balance."
             )
 
         # Don't remove the file if it's a user-specified path
