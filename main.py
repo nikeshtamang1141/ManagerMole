@@ -213,25 +213,30 @@ def graceful_shutdown(updater=None, lock_socket=None):
         logging.info("Shutdown complete")
 
 def error_handler(update, context):
-    """Handle errors in the dispatcher with improved conflict resolution."""
+    """Handle errors in the dispatcher - terminate immediately on conflict."""
     try:
         if isinstance(context.error, Conflict):
-            logging.warning("Conflict error: Another instance of the bot is already running")
+            logging.error("Conflict error: Another instance of the bot is already running. Terminating immediately.")
+            # Terminate this instance immediately
+            import os, sys
             
-            # If we hit a conflict, it's best to just terminate this instance
-            global SHUTDOWN_IN_PROGRESS
-            SHUTDOWN_IN_PROGRESS = True
-            
-            # Try to release resources
+            # Try to clean up resources first
             try:
-                if hasattr(context, 'dispatcher') and hasattr(context.dispatcher, 'stop'):
-                    context.dispatcher.stop()
-                    logging.info("Stopped dispatcher due to conflict")
-            except Exception as cleanup_error:
-                logging.error(f"Error during conflict cleanup: {cleanup_error}")
+                # Remove lock file if it exists
+                lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
+                if os.path.exists(lock_file_path):
+                    os.remove(lock_file_path)
+                    logging.info("Removed lock file during conflict termination")
                 
-            # Main instance should continue running, this one should exit
-            logging.warning("This instance will now terminate due to conflict")
+                # Try to stop updater
+                if hasattr(context, 'dispatcher') and hasattr(context.dispatcher, 'updater'):
+                    context.dispatcher.updater.stop()
+                    logging.info("Stopped updater during conflict termination")
+            except Exception as cleanup_error:
+                logging.error(f"Error during cleanup before termination: {cleanup_error}")
+            
+            # Exit process immediately
+            os._exit(1)
             
         elif isinstance(context.error, NetworkError):
             logging.error(f"Network error: {context.error}. Will retry automatically.")
@@ -2200,10 +2205,40 @@ def start_add_custom_bank(update: Update, context) -> None:
 
 def main():
     """Start the bot with enhanced instance management."""
-    global bot_updater, bot_lock_socket
+    global bot_updater
     
     # Create a simple lock file
     lock_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_instance.lock")
+    
+    # Kill any existing bot processes that might be running
+    try:
+        import psutil
+        import sys
+        current_pid = os.getpid()
+        current_process = psutil.Process(current_pid)
+        
+        # Look for other Python processes running with 'main.py' in their command line
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                # Skip the current process
+                if proc.pid == current_pid:
+                    continue
+                    
+                # Check if this is a Python process running our bot
+                cmdline = proc.cmdline() if hasattr(proc, 'cmdline') else []
+                if len(cmdline) > 1 and 'python' in cmdline[0].lower() and any('main.py' in cmd for cmd in cmdline):
+                    logging.warning(f"Found existing bot process (PID {proc.pid}), attempting to terminate it")
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                    logging.info(f"Successfully terminated process {proc.pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception as e:
+                logging.error(f"Error checking/terminating process: {e}")
+    except ImportError:
+        logging.warning("psutil not installed, cannot check for existing processes")
+    except Exception as e:
+        logging.error(f"Error during process cleanup: {e}")
     
     # Check if lock file exists
     if os.path.exists(lock_file_path):
@@ -2259,14 +2294,31 @@ def main():
             logging.error("Bot token not found")
             return
         
-        # Clean up any existing webhook
+        # Clean up any existing webhook more aggressively
         try:
+            logging.info("Cleaning up webhook before starting bot...")
             cleanup_bot = Bot(BOT_TOKEN)
+            
+            # Delete webhook with maximum cleanup
             cleanup_bot.delete_webhook(drop_pending_updates=True)
             time.sleep(3)
+            
+            # Force get updates to reset state
+            cleanup_bot.get_updates(offset=-1, limit=1, timeout=1)
+            time.sleep(1)
+            
+            # Delete webhook again for good measure
+            cleanup_bot.delete_webhook(drop_pending_updates=True)
+            time.sleep(3)
+            
+            # Clean up
             del cleanup_bot
+            logging.info("Webhook cleanup completed successfully")
         except Exception as e:
             logging.warning(f"Error during webhook cleanup: {e}")
+        
+        # Small delay to ensure any other instances have time to shut down
+        time.sleep(5)
         
         # Create updater with correct timeout parameters
         updater = Updater(BOT_TOKEN, request_kwargs={
@@ -2292,15 +2344,20 @@ def main():
         # Start keep-alive
         keep_alive()
         
-        # Start polling with correct parameters
-        updater.start_polling(
-            timeout=30,
-            drop_pending_updates=True,
-            allowed_updates=['message', 'callback_query', 'chat_member']
-        )
-        
-        logging.info("Bot started successfully")
-        updater.idle()
+        # Start polling with correct parameters and handle errors aggressively
+        try:
+            updater.start_polling(
+                timeout=30,
+                drop_pending_updates=True,
+                allowed_updates=['message', 'callback_query', 'chat_member']
+            )
+            logging.info("Bot started successfully")
+            updater.idle()
+        except Conflict as e:
+            logging.error(f"Conflict detected during start_polling: {e}")
+            # Terminate immediately on conflict
+            import sys
+            sys.exit(1)
         
     except KeyboardInterrupt:
         logging.info("Bot stopping due to keyboard interrupt")
@@ -2322,14 +2379,13 @@ def main():
 
 # Global variables to track bot state
 bot_updater = None
-bot_lock_socket = None
 
 # Signal handler for graceful shutdown
 def signal_handler(sig, frame):
     """Handle termination signals to ensure graceful shutdown."""
     logging.info(f"Received signal {sig}, initiating graceful shutdown...")
-    global bot_updater, bot_lock_socket
-    graceful_shutdown(bot_updater, bot_lock_socket)
+    global bot_updater
+    graceful_shutdown(bot_updater, None)
     import sys
     sys.exit(0)
 
