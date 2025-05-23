@@ -141,6 +141,11 @@ def run():
     # Get port from environment variable on Render.com
     port = int(os.getenv('PORT', 10000))
     
+    # Check if we're running on Render.com
+    is_render = os.environ.get('RENDER', '') == 'true'
+    if is_render:
+        logging.info(f"Running Flask server on Render.com with PORT={port}")
+    
     # Always avoid using port 10001 which is used for the socket lock
     if port == 10001:
         port = 10000
@@ -157,15 +162,22 @@ def run():
             threaded=True  # Ensure Flask runs in threaded mode
         )
         logging.info(f"Flask server running on {host}:{port}")
+        return True
     except OSError as e:
         # Handle case where port is already in use
         if "Address already in use" in str(e):
             logging.warning(f"Port {port} already in use, trying alternate port")
             try:
-                # Try an alternate port
+                # Try an alternate port - but if we're on Render, use their PORT
                 alt_port = port + 2  # Skip port+1 which might be used by another service
                 if alt_port == 10001:  # Skip the lock port
                     alt_port += 1
+                
+                # If we're on Render.com, we must use their PORT and fail otherwise
+                if is_render:
+                    logging.critical(f"Failed to bind to Render.com PORT {port}. Service will not work correctly!")
+                    # Try another port anyway as a last resort
+                
                 logging.info(f"Attempting to use alternate port {alt_port}")
                 app.run(
                     host=host,
@@ -174,6 +186,7 @@ def run():
                     threaded=True
                 )
                 logging.info(f"Flask server running on {host}:{alt_port}")
+                return True
             except Exception as inner_e:
                 logging.error(f"Failed to start on alternate port: {inner_e}")
                 return False
@@ -183,8 +196,6 @@ def run():
     except Exception as e:
         logging.error(f"Unexpected error starting Flask server: {e}")
         return False
-    
-    return True
 
 # Track start time for uptime calculation
 START_TIME = datetime.now()

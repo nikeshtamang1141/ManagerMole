@@ -2269,12 +2269,23 @@ def main():
     global bot_updater
     
     # Special handling for Render.com environment
+    import os  # Make sure os is imported in this scope
     is_render = os.environ.get('RENDER', '') == 'true'
     if is_render:
         logging.info("Detected Render.com environment - using specialized setup")
         # Ensure we're using the correct port
         port = os.environ.get('PORT')
         logging.info(f"Render assigned PORT: {port}")
+        
+        # Make sure the PORT is set in environment variables
+        if port:
+            # Port must be available in this process and in child threads
+            os.environ['PORT'] = port
+            logging.info(f"Set PORT environment variable to {port}")
+        else:
+            # If no port is assigned, set a default for Render that works with web services
+            os.environ['PORT'] = '10000'  # Render expects a port to be open
+            logging.warning("No PORT specified in Render environment, using default: 10000")
         
         # Add additional information to logs
         render_instance = os.environ.get('RENDER_INSTANCE_ID', 'unknown')
@@ -2311,8 +2322,10 @@ def main():
             dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_conversation))
             dp.add_error_handler(error_handler)
 
-            # Start keep-alive
-            keep_alive()
+            # Start keep-alive server - MUST be done before bot polling on Render
+            keep_alive_success = keep_alive()
+            if is_render and not keep_alive_success:
+                logging.critical("Failed to start keep-alive server on Render. Service might fail!")
             
             # Start the bot with conflict handling and automatic recovery
             try:
