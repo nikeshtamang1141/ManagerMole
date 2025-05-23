@@ -2268,6 +2268,19 @@ def main():
     """Start the bot with comprehensive conflict prevention and recovery."""
     global bot_updater
     
+    # Special handling for Render.com environment
+    is_render = os.environ.get('RENDER', '') == 'true'
+    if is_render:
+        logging.info("Detected Render.com environment - using specialized setup")
+        # Ensure we're using the correct port
+        port = os.environ.get('PORT')
+        logging.info(f"Render assigned PORT: {port}")
+        
+        # Add additional information to logs
+        render_instance = os.environ.get('RENDER_INSTANCE_ID', 'unknown')
+        render_service = os.environ.get('RENDER_SERVICE_NAME', 'unknown')
+        logging.info(f"Running as Render service: {render_service}, instance: {render_instance}")
+    
     # Max number of restart attempts
     max_restarts = 5
     restart_attempts = 0
@@ -2311,25 +2324,14 @@ def main():
                 )
                 logging.info("Bot started successfully")
                 
-                # Monitor the updater's running state
-                while True:
-                    if not updater._running:
-                        logging.warning("Updater stopped running. Attempting to restart...")
-                        break
-                    time.sleep(60)  # Check every minute
-                    
-                    # Check if network is available by pinging Telegram's API
-                    try:
-                        telegram_response = requests.get("https://api.telegram.org", timeout=10)
-                        if telegram_response.status_code >= 500:
-                            logging.warning(f"Telegram API returned error {telegram_response.status_code}. Will continue monitoring.")
-                    except requests.RequestException as e:
-                        logging.error(f"Network error during Telegram API check: {e}")
-                        # No need to restart here, just keep monitoring
-                    
-                # If we reach here, the updater stopped and we need to restart
-                raise Exception("Updater stopped running")
+                # Use a different approach to monitor the updater's state
+                # Instead of checking an attribute that doesn't exist, we'll 
+                # use the idle() method which will block until we receive a stop signal
+                updater.idle()
                 
+                # If idle() returns, it means the bot was stopped externally
+                logging.warning("Updater stopped running. Attempting to restart...")
+                    
             except Conflict as e:
                 logging.critical(f"Conflict detected during polling: {e}")
                 # Force exit on conflict
