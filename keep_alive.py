@@ -15,7 +15,7 @@ HOME_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Bot Status Dashboard</title>
+    <title>Bot Status Dashboard - {{ platform }}</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -72,7 +72,7 @@ HOME_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>🤖 Bot Status Dashboard</h1>
+        <h1>🤖 Bot Status Dashboard - {{ platform }}</h1>
         
         <div class="status online">
             <h2>✅ Bot Status: Online</h2>
@@ -92,12 +92,12 @@ HOME_TEMPLATE = '''
                 <p>Port: {{ port }}</p>
                 <p>Host: {{ host }}</p>
                 <p>Debug Mode: {{ debug }}</p>
-                <p>Permanent Replit URL: <span id="replit-url">{{ replit_url }}</span></p>
+                <p>Service URL: <span id="service-url">{{ service_url }}</span></p>
                 <p style="color: #1557b0; font-size: 0.9em;">⚡ This is your permanent URL for UptimeRobot</p>
                 <button onclick="copyUrl()" class="refresh" style="background-color: #34a853;">📋 Copy URL</button>
                 <script>
                     function copyUrl() {
-                        const url = document.getElementById('replit-url').textContent;
+                        const url = document.getElementById('service-url').textContent;
                         navigator.clipboard.writeText(url);
                         alert('URL copied to clipboard!');
                     }
@@ -113,6 +113,17 @@ HOME_TEMPLATE = '''
 
 @app.route('/')
 def home():
+    # Check if running on Render
+    is_render = os.environ.get('RENDER', '') == 'true'
+    
+    # Get the appropriate URL based on environment
+    if is_render:
+        service_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
+        platform_name = "Render"
+    else:
+        service_url = f'https://{os.getenv("REPL_SLUG", "unknown")}.{os.getenv("REPL_OWNER", "unknown")}.replit.co'
+        platform_name = "Replit"
+    
     stats = {
         'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'cpu_usage': round(psutil.cpu_percent(), 1),
@@ -121,19 +132,29 @@ def home():
         'port': os.getenv('PORT', 8080),
         'host': '0.0.0.0',
         'debug': 'Disabled',
-        'replit_url': f'https://{os.getenv("REPL_SLUG", "unknown")}.{os.getenv("REPL_OWNER", "unknown")}.replit.co'
+        'service_url': service_url,
+        'platform': platform_name
     }
     return render_template_string(HOME_TEMPLATE, **stats)
 
 @app.route('/health')
 def health():
-    replit_url = f'https://{os.getenv("REPL_SLUG", "unknown")}.{os.getenv("REPL_OWNER", "unknown")}.replit.co'
+    # Check if running on Render
+    is_render = os.environ.get('RENDER', '') == 'true'
+    
+    # Get the appropriate URL based on environment
+    if is_render:
+        service_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://your-app-name.onrender.com')
+    else:
+        service_url = f'https://{os.getenv("REPL_SLUG", "unknown")}.{os.getenv("REPL_OWNER", "unknown")}.replit.co'
+    
     return {
         "status": "healthy",
         "message": "Bot is running",
         "timestamp": datetime.now().isoformat(),
         "uptime": str(datetime.now() - START_TIME),
-        "url": replit_url
+        "url": service_url,
+        "platform": "Render" if is_render else "Replit"
     }
 
 def run():
