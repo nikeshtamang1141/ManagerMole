@@ -11,6 +11,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, Filters
 from telegram.error import Conflict, TelegramError, NetworkError
+import requests
 
 # Import keep_alive function
 from keep_alive import keep_alive
@@ -1445,7 +1446,7 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
                 paid_to_host_sum += row_sum
                 
                 # Write the sum to Paid To Host column
-                row = ['', '', '', row_sum, '', '', '']
+                row = ['', '', '', f"{row_sum:.2f}", '', '', '']
                 writer.writerow(row)
             
             # Add empty row before totals
@@ -1453,7 +1454,9 @@ def process_export_csv(update: Update, context, use_manual_input=False) -> None:
             
             # Format the totals with two decimal places
             total_deposit_formatted = f"{total_deposit:.2f}"
+            # IMPORTANT: total_paid should ONLY be the sum of the Paid To Host columns
             total_paid_formatted = f"{paid_to_host_sum:.2f}"
+            # Balance is deposits minus what was paid to host
             balance_formatted = f"{total_deposit - paid_to_host_sum:.2f}"
             
             # Write the totals row
@@ -2262,63 +2265,106 @@ def initialize_bot_safely():
 
 
 def main():
-    """Start the bot with comprehensive conflict prevention."""
+    """Start the bot with comprehensive conflict prevention and recovery."""
     global bot_updater
     
-    # Initialize the bot with conflict prevention
-    updater = initialize_bot_safely()
-    if not updater:
-        logging.error("Failed to initialize bot safely. Exiting.")
-        return
+    # Max number of restart attempts
+    max_restarts = 5
+    restart_attempts = 0
     
-    bot_updater = updater
-    
-    try:
-        # Register handlers
-        dp = updater.dispatcher
-        dp.add_handler(CommandHandler("start", start))
-        dp.add_handler(CommandHandler("help", help_command))
-        dp.add_handler(CommandHandler("process", process_command))
-        dp.add_handler(CommandHandler("clear", clear_command))
-        dp.add_handler(CommandHandler("settings", settings_command))
-        dp.add_handler(CommandHandler("export_csv", export_csv))
-        dp.add_handler(CommandHandler("export_json", export_json))
-        dp.add_handler(CommandHandler("stats", stats_command))
-        dp.add_handler(CallbackQueryHandler(button_callback))
-        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_conversation))
-        dp.add_error_handler(error_handler)
-
-        # Start keep-alive
-        keep_alive()
-        
-        # Start the bot with conflict handling
+    while restart_attempts < max_restarts:
         try:
-            logging.info("Starting bot polling...")
-            updater.start_polling(
-                timeout=30,
-                drop_pending_updates=True,
-                allowed_updates=['message', 'callback_query', 'chat_member']
-            )
-            logging.info("Bot started successfully")
-            updater.idle()
-        except Conflict as e:
-            logging.critical(f"Conflict detected during polling: {e}")
-            # Force exit on conflict
-            import os
-            os._exit(1)
+            # Initialize the bot with conflict prevention
+            updater = initialize_bot_safely()
+            if not updater:
+                logging.error("Failed to initialize bot safely. Waiting to retry...")
+                time.sleep(30)  # Wait before retry
+                restart_attempts += 1
+                continue
             
-    except Exception as e:
-        logging.error(f"Error in main function: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-    finally:
-        if updater:
+            bot_updater = updater
+            
+            # Register handlers
+            dp = updater.dispatcher
+            dp.add_handler(CommandHandler("start", start))
+            dp.add_handler(CommandHandler("help", help_command))
+            dp.add_handler(CommandHandler("process", process_command))
+            dp.add_handler(CommandHandler("clear", clear_command))
+            dp.add_handler(CommandHandler("settings", settings_command))
+            dp.add_handler(CommandHandler("export_csv", export_csv))
+            dp.add_handler(CommandHandler("export_json", export_json))
+            dp.add_handler(CommandHandler("stats", stats_command))
+            dp.add_handler(CallbackQueryHandler(button_callback))
+            dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_conversation))
+            dp.add_error_handler(error_handler)
+
+            # Start keep-alive
+            keep_alive()
+            
+            # Start the bot with conflict handling and automatic recovery
             try:
-                updater.stop()
-                logging.info("Updater stopped")
-            except:
-                pass
-        logging.info("Bot shutdown complete")
+                logging.info("Starting bot polling...")
+                updater.start_polling(
+                    timeout=30,
+                    drop_pending_updates=True,
+                    allowed_updates=['message', 'callback_query', 'chat_member']
+                )
+                logging.info("Bot started successfully")
+                
+                # Monitor the updater's running state
+                while True:
+                    if not updater._running:
+                        logging.warning("Updater stopped running. Attempting to restart...")
+                        break
+                    time.sleep(60)  # Check every minute
+                    
+                    # Check if network is available by pinging Telegram's API
+                    try:
+                        telegram_response = requests.get("https://api.telegram.org", timeout=10)
+                        if telegram_response.status_code >= 500:
+                            logging.warning(f"Telegram API returned error {telegram_response.status_code}. Will continue monitoring.")
+                    except requests.RequestException as e:
+                        logging.error(f"Network error during Telegram API check: {e}")
+                        # No need to restart here, just keep monitoring
+                    
+                # If we reach here, the updater stopped and we need to restart
+                raise Exception("Updater stopped running")
+                
+            except Conflict as e:
+                logging.critical(f"Conflict detected during polling: {e}")
+                # Force exit on conflict
+                import os
+                os._exit(1)
+            except (NetworkError, ConnectionError, requests.RequestException) as e:
+                logging.error(f"Network error: {e}. Restarting...")
+                time.sleep(30)  # Wait before restart
+                restart_attempts += 1
+                continue
+            except Exception as e:
+                logging.error(f"Error during bot polling: {e}")
+                time.sleep(30)  # Wait before restart
+                restart_attempts += 1
+                continue
+                
+        except Exception as e:
+            logging.error(f"Error in main function: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            time.sleep(30)  # Wait before restart
+            restart_attempts += 1
+        finally:
+            if updater:
+                try:
+                    updater.stop()
+                    logging.info("Updater stopped")
+                except:
+                    pass
+    
+    # If we've reached max restarts, log a critical error
+    if restart_attempts >= max_restarts:
+        logging.critical(f"Reached maximum restart attempts ({max_restarts}). Please check the bot configuration.")
+    
+    logging.info("Bot shutdown complete")
 
 
 # Global variables to track bot state

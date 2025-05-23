@@ -185,21 +185,35 @@ def run():
 START_TIME = datetime.now()
 
 def self_ping():
-    """Ping the application every 10 minutes to prevent sleeping"""
+    """Ping the application every 5 minutes to prevent sleeping on Render.com"""
     while True:
         try:
-            # Get the render URL from environment variable
+            # Get the Render URL from environment variable, if available
             render_url = os.getenv('RENDER_EXTERNAL_URL')
             if render_url:
-                requests.get(f"{render_url}/health")
-                logging.info("Self-ping successful")
-            time.sleep(600)  # Wait 10 minutes
+                response = requests.get(f"{render_url}/health", timeout=10)
+                if response.status_code == 200:
+                    logging.info(f"Self-ping successful: {render_url}/health")
+                else:
+                    logging.warning(f"Self-ping received non-200 response: {response.status_code}")
+            else:
+                # Try to self-ping using localhost as a fallback
+                try:
+                    port = int(os.getenv('PORT', 10000))
+                    local_response = requests.get(f"http://localhost:{port}/health", timeout=5)
+                    logging.info("Local self-ping successful")
+                except Exception as local_e:
+                    logging.warning(f"Local self-ping failed: {local_e}")
+            
+            # Sleep for 5 minutes before next ping (increased frequency for better reliability)
+            time.sleep(300)
         except Exception as e:
-            logging.error(f"Self-ping failed: {e}")
-            time.sleep(30)  # Wait 30 seconds before retrying
+            logging.error(f"Self-ping error: {e}")
+            # Shorter retry on error
+            time.sleep(60)
 
 def keep_alive():
-    """Start a Flask server to keep the bot alive.
+    """Start a Flask server to keep the bot alive and initialize self-ping.
     
     Returns:
         bool: True if the server started successfully, False otherwise
@@ -221,11 +235,17 @@ def keep_alive():
         server_thread.daemon = True  # Thread will close when the main program exits
         server_thread.start()
         
+        # Start the self-pinger in a separate thread
+        ping_thread = Thread(target=self_ping)
+        ping_thread.daemon = True
+        ping_thread.start()
+        logging.info("Self-ping service started")
+        
         # Wait a moment to ensure the server starts properly
         time.sleep(1)
         logging.info("Keep-alive server started successfully")
         return True
     except Exception as e:
-        logging.error(f"Failed to start keep-alive server: {e}")
+        logging.error(f"Failed to start keep-alive server: {e}", exc_info=True)
         # Continue anyway - the bot can run without the keep-alive server
         return False
